@@ -83,7 +83,7 @@ val jdkArch = mapOf("x64" to "x86_64", "arm64" to "aarch64")
 if (target != null && !(isMac && macArch in jdkArch)) throw GradleException("-Ptarget=$target cannot be built on this system")
 if (macArch != null && System.getProperty("os.arch") != jdkArch[macArch]) throw GradleException("-Ptarget=$target needs Gradle on a ${jdkArch[macArch]} JDK 21 (JAVA_HOME; for x64 also arch -x86_64)")
 val nativeDir = macArch?.let { "native-$it" } ?: "native"
-val gcFlags = listOf("-XX:+UseZGC", "-XX:+ZGenerational", "-XX:MaxRAMPercentage=60")
+val gcFlags = listOf("-XX:+UseZGC", "-XX:+ZGenerational", "-XX:MaxRAMPercentage=60", "-XX:ZUncommitDelay=20")
 val appArchive = "\$APPDIR/app-${(System.currentTimeMillis() / 1000).toString(16)}.jsa"
 val bundledTools = if (macArch != null) listOf("ffmpeg", "ffprobe").associate { "am.$it" to file("build/$nativeDir/$it").absolutePath } else emptyMap()
 
@@ -104,7 +104,7 @@ tasks.withType<JavaExec>().matching { it.name == "run" }.configureEach {
     systemProperty("am.repo", file("..").absolutePath)
     systemProperty("skiko.data.path", file("build/skiko").absolutePath)
     systemProperty("apple.awt.application.name", "AbsentMotion")
-    jvmArgs("-XX:+UseZGC", "-XX:+ZGenerational", "-XX:MaxRAMPercentage=60")
+    jvmArgs(gcFlags)
     System.getenv("AM_DATA")?.let { systemProperty("am.data", it) }
     System.getenv("AM_LOG")?.let { systemProperty("am.log", it) }
 }

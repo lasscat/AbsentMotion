@@ -437,6 +437,7 @@ fun DeskApp(app: DeskAppState) {
     val scale = DeskScale.percent / 100f
     val focused = LocalWindowInfo.current.isWindowFocused
     LaunchedEffect(focused) { if (!focused) DeskKeys.releaseAll() }
+    LaunchedEffect(app.settings.previewCacheMb) { DeskHeap.follow(app.settings.previewCacheMb) }
     val clicks = LocalViewConfiguration.current
     val system = remember(clicks) { systemClicks(clicks) }
     CompositionLocalProvider(LocalDensity provides Density(base.density * scale, base.fontScale), LocalViewConfiguration provides system) { DeskTyping.Track { DeskContent(app, scale) } }

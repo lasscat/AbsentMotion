@@ -51,6 +51,7 @@ private const val QUALITY = 85
 private const val AHEAD = 2
 private const val POOL = AHEAD + 3
 private const val PACKERS = 3
+private const val RELEASE_DELAY_MS = 2_000L
 private const val TAG = "AMCache"
 
 fun previewCacheBudget(memoryClassMb: Int, lowRam: Boolean, compatible: Boolean): Long {
@@ -705,6 +706,7 @@ object PreviewCache {
     }
 
     fun clear() {
+        val held = (store?.bytes ?: 0L) > 0L
         generation++
         stopRequested = false
         memoryStopped = false
@@ -722,6 +724,16 @@ object PreviewCache {
         automatic = false
         slowUntilNs = 0L
         revise(force = true)
+        if (held) release()
+    }
+
+    private val releasing = java.util.concurrent.atomic.AtomicBoolean()
+
+    private fun release() {
+        if (!PlatformFeatures.desktop || !releasing.compareAndSet(false, true)) return
+        Thread({
+            try { Thread.sleep(RELEASE_DELAY_MS); System.gc() } finally { releasing.set(false) }
+        }, "am-cache-release").apply { isDaemon = true }.start()
     }
 
     fun trim(level: Int) {
