@@ -681,6 +681,16 @@
       "note": ""
     },
     {
+      "id": "preview.cache_size",
+      "name": "Preview cache size in Settings, Playback (256 MB, 512 MB, 1 GB, 2 GB)",
+      "where": "PreviewCache.kt, SettingsDrawer.kt, AppSettings.kt",
+      "android": "missing",
+      "macos": "works",
+      "windows": "untested",
+      "linux": "untested",
+      "note": "desktop only: the desktop cache keeps compressed frames in memory within the chosen size; Android keeps its own cache sizing from free memory and storage"
+    },
+    {
       "id": "preview.pinch_gestures",
       "name": "Two-finger move, scale and rotate of the selected layer",
       "where": "Preview.kt, LayerTools.kt, DesktopPlatform.kt previewWheel",

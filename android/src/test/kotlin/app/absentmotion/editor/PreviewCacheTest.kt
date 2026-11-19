@@ -144,6 +144,81 @@ class PreviewCacheTest {
         assertFalse(file.exists())
     }
 
+    @Test fun thePackedBudgetFollowsTheChosenSizeNotTheHeapCeiling() {
+        assertEquals(512 * mib, packedStoreBudget(DEFAULT_PREVIEW_CACHE_MB, 22_120 * mib))
+        assertEquals(2048 * mib, packedStoreBudget(2048, 22_120 * mib))
+        assertEquals(512 * mib * 2 / 5, packedStoreBudget(1024, 512 * mib))
+        assertEquals(256 * mib, packedStoreBudget(0, 22_120 * mib))
+        assertTrue(DEFAULT_PREVIEW_CACHE_MB in PREVIEW_CACHE_SIZES)
+    }
+
+    @Test fun packedFramesComeBackExactlyAndAreSmallerThanTheRawPixels() {
+        val width = 64
+        val height = 48
+        val rgba = ByteArray(width * height * 4) { i -> if (i % 4 == 3) -1 else ((i / 4 % width) * 3 + i % 4).toByte() }
+        val packed = packFrame(rgba)
+        assertTrue(packed.size < rgba.size / 4)
+        val back = ByteArray(rgba.size)
+        assertTrue(unpackFrame(packed, back))
+        assertArrayEquals(rgba, back)
+        assertArrayEquals(packed, packFrame(rgba.copyOf()))
+    }
+
+    @Test fun aPackedFrameOfTheWrongSizeOrDamagedIsRefused() {
+        val rgba = ByteArray(32 * 32 * 4) { (it * 7).toByte() }
+        val packed = packFrame(rgba)
+        assertFalse(unpackFrame(packed, ByteArray(rgba.size - 4)))
+        assertFalse(unpackFrame(packed, ByteArray(rgba.size + 4)))
+        assertFalse(unpackFrame(packed.copyOf(packed.size / 2), ByteArray(rgba.size)))
+        assertFalse(unpackFrame(ByteArray(16) { -1 }, ByteArray(rgba.size)))
+    }
+
+    private fun fill(store: FrameStore, last: Int, at: Int) {
+        for (frame in previewOrder(last, at, 30)) {
+            if (frame in store) continue
+            var kept = true
+            while (kept && !store.put(frame, ByteArray(10))) kept = store.evictFarther(at, frame)
+            if (!kept) return
+        }
+    }
+
+    @Test fun aProjectLongerThanTheBudgetKeepsAWindowAroundThePlayheadWithMoreAhead() {
+        val store = FrameStore(0, 900 * 10L, packed = true)
+        fill(store, 9_999, 5_000)
+        assertEquals(900, store.count)
+        val (behind, ahead) = store.runs()
+        assertEquals(4_999, behind.last)
+        assertEquals(5_001, ahead.first)
+        assertTrue(ahead.count() > behind.count())
+        assertTrue(ahead.count() <= 2 * behind.count() + 60)
+        assertEquals(9_000L, store.bytes)
+    }
+
+    @Test fun movingThePlayheadTradesFarFramesForNearOnesWithinTheBudget() {
+        val store = FrameStore(0, 300 * 10L, packed = true)
+        fill(store, 9_999, 1_000)
+        fill(store, 9_999, 4_000)
+        assertEquals(300, store.count)
+        assertTrue(store.runs().all { it.first > 3_800 && it.last < 4_300 })
+        assertTrue(4_001 in store && 3_999 in store)
+        assertFalse(1_000 in store)
+        assertEquals(3_000L, store.bytes)
+    }
+
+    @Test fun aFrameFartherThanEverythingKeptIsNotStoredOnceTheBudgetIsFull() {
+        val store = FrameStore(0, 3 * 10L, packed = true)
+        assertTrue(store.put(100, ByteArray(10)))
+        assertTrue(store.put(101, ByteArray(10)))
+        assertTrue(store.put(98, ByteArray(10)))
+        assertFalse(store.put(104, ByteArray(10)))
+        assertFalse(store.evictFarther(100, 104))
+        assertEquals(3, store.count)
+        assertTrue(store.evictFarther(100, 102))
+        assertFalse(98 in store)
+        assertTrue(store.put(102, ByteArray(10)))
+        assertEquals(listOf(100..102), store.runs())
+    }
+
     @Test fun diskBudgetKeepsAReserveFreeAndHasACap() {
         val mib = 1L shl 20
         assertEquals(0L, diskBudget(512 * mib))

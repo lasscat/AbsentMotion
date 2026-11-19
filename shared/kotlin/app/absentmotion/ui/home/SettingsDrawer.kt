@@ -196,6 +196,15 @@ internal fun PlaybackSettings(settings: AppSettings) {
     Divider(10.dp)
     SwitchRow(stringResource(R.string.settings_background_preview), settings.backgroundPreview, enabled = true) { settings.backgroundPreview = it }
     Divider(10.dp)
+    if (DESK) {
+        ChoicesBlock(R.string.settings_preview_cache_size, note = {
+            Text(stringResource(R.string.settings_preview_cache_note), Modifier.padding(horizontal = 10.dp), color = Am.HomeMid, fontSize = 12.sp, lineHeight = 16.sp)
+        }) {
+            val sizes = app.absentmotion.editor.PREVIEW_CACHE_SIZES
+            Choices(listOf(R.string.settings_cache_256mb, R.string.settings_cache_512mb, R.string.settings_cache_1gb, R.string.settings_cache_2gb), sizes.indexOf(settings.previewCacheMb)) { settings.previewCacheMb = sizes[it] }
+        }
+        Divider(10.dp)
+    }
     SwitchRow(stringResource(R.string.settings_model_detail), settings.highDetailModels, enabled = true) { settings.highDetailModels = it }
     Text(stringResource(R.string.settings_model_detail_note, triangles(MODEL_HIGH_DETAIL_BUDGET), triangles(MODEL_TRIANGLE_BUDGET)), Modifier.padding(horizontal = 10.dp),
         color = Am.HomeMid, fontSize = 12.sp, lineHeight = 16.sp)

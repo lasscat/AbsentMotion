@@ -50,6 +50,7 @@ private const val ESTIMATE_PER_MILLE = 150L
 private const val QUALITY = 85
 private const val AHEAD = 2
 private const val POOL = AHEAD + 3
+private const val PACKERS = 3
 private const val TAG = "AMCache"
 
 fun previewCacheBudget(memoryClassMb: Int, lowRam: Boolean, compatible: Boolean): Long {
@@ -57,7 +58,42 @@ fun previewCacheBudget(memoryClassMb: Int, lowRam: Boolean, compatible: Boolean)
     return minOf(MAX_BUDGET, memoryClassMb.coerceAtLeast(16) * MIB * percent / 100)
 }
 
-fun rawStoreBudget(heapMax: Long): Long = minOf(4096 * MIB, heapMax * 2 / 5)
+val PREVIEW_CACHE_SIZES = listOf(256, 512, 1024, 2048)
+const val DEFAULT_PREVIEW_CACHE_MB = 512
+
+fun packedStoreBudget(chosenMb: Int, heapMax: Long): Long = minOf(chosenMb.coerceAtLeast(PREVIEW_CACHE_SIZES.first()) * MIB, heapMax * 2 / 5)
+
+private val packers = ThreadLocal.withInitial { java.util.zip.Deflater(1, true) }
+private val packChunks = ThreadLocal.withInitial { ByteArray(64 * 1024) }
+
+fun packFrame(rgba: ByteArray): ByteArray {
+    val deflater = packers.get()
+    val chunk = packChunks.get()
+    deflater.reset()
+    deflater.setInput(rgba)
+    deflater.finish()
+    val out = ByteArrayOutputStream(rgba.size / 4)
+    while (!deflater.finished()) out.write(chunk, 0, deflater.deflate(chunk))
+    return out.toByteArray()
+}
+
+fun unpackFrame(packed: ByteArray, into: ByteArray): Boolean {
+    val inflater = java.util.zip.Inflater(true)
+    return try {
+        inflater.setInput(packed)
+        var filled = 0
+        while (filled < into.size && !inflater.finished()) {
+            val n = inflater.inflate(into, filled, into.size - filled)
+            if (n == 0 && (inflater.needsInput() || inflater.needsDictionary())) break
+            filled += n
+        }
+        filled == into.size && inflater.finished()
+    } catch (_: java.util.zip.DataFormatException) {
+        false
+    } finally {
+        inflater.end()
+    }
+}
 
 fun storeBudget(budget: Long, width: Int, height: Int): Long = maxOf(budget / 4, budget - POOL * 4L * width * height)
 
@@ -102,7 +138,7 @@ fun flattenOnChecker(rgba: ByteArray, width: Int, height: Int, cell: Float): Boo
     return translucent
 }
 
-class FrameStore(val first: Int, val budget: Long, private val file: java.io.File? = null, val raw: Boolean = false) : java.io.Closeable {
+class FrameStore(val first: Int, val budget: Long, private val file: java.io.File? = null, val packed: Boolean = false) : java.io.Closeable {
     private data class Record(val data: ByteArray?, val offset: Long, val size: Int)
     private val records = java.util.TreeMap<Int, Record>()
     private val disk = file?.let { java.io.RandomAccessFile(it, "rw").apply { setLength(0) } }
@@ -212,6 +248,7 @@ class FramePlayer internal constructor(private val store: FrameStore, val width:
     @Volatile private var closed = false
     private val epoch = java.util.concurrent.atomic.AtomicLong()
     private val work = Runnable { decodeWanted() }
+    private var pixels: ByteArray? = null
 
     fun want(frame: Int, playing: Boolean) {
         if (closed) return
@@ -251,8 +288,9 @@ class FramePlayer internal constructor(private val store: FrameStore, val width:
         synchronized(this) { decoded[frame] }?.let { return it }
         val bytes = store[frame] ?: return null
         val reuse = synchronized(this) { victim() }
-        val made = if (store.raw) {
-            Decoded(null, (try { rawFrameImage(bytes, width, height) } catch (_: OutOfMemoryError) { null }) ?: return null)
+        val made = if (store.packed) {
+            val frameImage = unpack(bytes) ?: return null
+            Decoded(null, (try { rawFrameImage(frameImage, width, height) } catch (_: OutOfMemoryError) { null }) ?: return null)
         } else {
             val bitmap = decodeEncoded(bytes, reuse) ?: return null
             Decoded(bitmap, bitmap.asImageBitmap())
@@ -262,6 +300,11 @@ class FramePlayer internal constructor(private val store: FrameStore, val width:
             decoded[frame] = made
         }
         return made
+    }
+
+    private fun unpack(packed: ByteArray): ByteArray? {
+        val into = pixels ?: (try { ByteArray(width * height * 4) } catch (_: OutOfMemoryError) { return null }).also { pixels = it }
+        return into.takeIf { unpackFrame(packed, it) }
     }
 
     private fun decodeEncoded(bytes: ByteArray, reuse: Bitmap?): Bitmap? {
@@ -280,7 +323,7 @@ class FramePlayer internal constructor(private val store: FrameStore, val width:
         val target = wanted
         val frame = decoded.keys.filter { it !in recent && it !in target..target + AHEAD }.maxByOrNull { abs(it - target) } ?: return null
         val removed = decoded.remove(frame) ?: return null
-        if (store.raw) releaseFrameImage(removed.image)
+        if (store.packed) releaseFrameImage(removed.image)
         return removed.bitmap
     }
 
@@ -361,15 +404,16 @@ object PreviewCache {
         val at = state.frame
         val cell = checkerCell
         val (width, height) = cacheFrameSize(next.scene.width, next.scene.height, fit, next.divisor)
+        val packed = PlatformFeatures.desktop
+        val budget = if (packed) packedStoreBudget(state.settings.previewCacheMb, Runtime.getRuntime().maxMemory()) else {
+            val manager = context.applicationContext.getSystemService(ActivityManager::class.java)
+            storeBudget(previewCacheBudget(manager?.memoryClass ?: 128, manager?.isLowRamDevice == true, Tier.compatible), width, height)
+        }
         val previous = key
-        if (!automatic || previous == null || previous.copy(scene = next.scene) != next || player?.width != width || player?.height != height || preparedCell != cell) {
+        if (!automatic || previous == null || previous.copy(scene = next.scene) != next || player?.width != width || player?.height != height || preparedCell != cell || store?.budget != budget) {
             if (!automatic && previous == next && phase == Phase.Ready) return
             clear()
-            val manager = context.applicationContext.getSystemService(ActivityManager::class.java)
-            val raw = PlatformFeatures.desktop
-            val budget = if (raw) rawStoreBudget(Runtime.getRuntime().maxMemory())
-                else storeBudget(previewCacheBudget(manager?.memoryClass ?: 128, manager?.isLowRamDevice == true, Tier.compatible), width, height)
-            store = FrameStore(0, budget, raw = raw)
+            store = FrameStore(0, budget, packed = packed)
             player = FramePlayer(store!!, width, height)
             automatic = true
             preparedCell = cell
@@ -380,36 +424,34 @@ object PreviewCache {
         fun current() = generation == mine && accept() && key == next && state.engine.mediaRevision.value == next.resources
         if (!current() || System.nanoTime() < slowUntilNs) return
         val built = store ?: return
-        val encoder = if (built.raw) null else try { Encoder(width, height) } catch (_: OutOfMemoryError) {
+        if (built.packed) {
+            try { fillPacked(state, next, built, at, width, height, cell, ::current) }
+            catch (e: CancellationException) { throw e }
+            catch (_: OutOfMemoryError) { slowUntilNs = System.nanoTime() + 30_000_000_000L }
+            catch (e: Exception) {
+                Log.w(TAG, "automatic preview preparation failed", e)
+                slowUntilNs = System.nanoTime() + 10_000_000_000L
+            }
+            return
+        }
+        val encoder = try { Encoder(width, height) } catch (_: OutOfMemoryError) {
             slowUntilNs = System.nanoTime() + 30_000_000_000L
             return
         }
         try {
-            val order = previewOrder(next.scene.lastFrame, at, if (built.raw) 30 else 1)
-            var index = 0
-            var refused = 0
-            while (index < order.size) {
-                val frame = order[index]
+            for (frame in previewOrder(next.scene.lastFrame, at)) {
                 currentCoroutineContext().ensureActive()
                 if (!current()) return
-                if (frame in built) { index++; continue }
+                if (frame in built) continue
                 if (!heapRoom(width.toLong() * height * 12)) return
                 val started = System.nanoTime()
-                val pixels = state.engine.capturePreviewFrame(next.scene, next.scene.frameStart(frame), width, height, next.accurateBlur, ::current)
-                if (pixels == null) {
-                    if (!built.raw || ++refused >= 20) { refused = 0; index++; continue }
-                    delay(50)
-                    continue
-                }
-                refused = 0
-                index++
+                val pixels = state.engine.capturePreviewFrame(next.scene, next.scene.frameStart(frame), width, height, next.accurateBlur, ::current) ?: continue
                 currentCoroutineContext().ensureActive()
                 if (!current()) return
-                val stored = withContext(Dispatchers.Default) { if (encoder == null) pixels.also { flattenOnChecker(it, width, height, cell) } else encoder.encode(pixels, cell, true) } ?: return
+                val stored = withContext(Dispatchers.Default) { encoder.encode(pixels, cell, true) } ?: return
                 if (!current()) return
                 while (!built.put(frame, stored)) if (!built.evictFarther(at, frame)) { revise(force = true); return }
                 revise()
-                if (encoder == null) continue
                 val elapsed = System.nanoTime() - started
                 if (elapsed > 80_000_000L) { slowUntilNs = System.nanoTime() + 10_000_000_000L; return }
                 delay(maxOf(30L, elapsed / 1_000_000))
@@ -422,7 +464,46 @@ object PreviewCache {
         } catch (e: Exception) {
             Log.w(TAG, "automatic preview preparation failed", e)
             slowUntilNs = System.nanoTime() + 10_000_000_000L
-        } finally { encoder?.bitmap?.recycle() }
+        } finally { encoder.bitmap.recycle() }
+    }
+
+    private suspend fun fillPacked(state: EditorState, next: CacheKey, built: FrameStore, at: Int, width: Int, height: Int, cell: Float, current: () -> Boolean) = coroutineScope {
+        val started = System.nanoTime()
+        val before = built.count
+        val order = previewOrder(next.scene.lastFrame, at, 30)
+        val pending = ArrayDeque<Pair<Int, Deferred<ByteArray>>>()
+        suspend fun keep(): Boolean {
+            val (frame, work) = pending.removeFirst()
+            val stored = work.await()
+            if (!current()) return false
+            while (!built.put(frame, stored)) if (!built.evictFarther(at, frame)) return false
+            revise()
+            return true
+        }
+        var index = 0
+        var refused = 0
+        var going = true
+        while (going && index < order.size) {
+            val frame = order[index]
+            currentCoroutineContext().ensureActive()
+            if (!current()) break
+            if (frame in built) { index++; continue }
+            if (!heapRoom(width.toLong() * height * 12)) break
+            val pixels = state.engine.capturePreviewFrame(next.scene, next.scene.frameStart(frame), width, height, next.accurateBlur, current)
+            if (pixels == null) {
+                if (++refused >= 20) { refused = 0; index++ } else delay(50)
+                continue
+            }
+            refused = 0
+            index++
+            if (!current()) break
+            pending.addLast(frame to async(Dispatchers.Default) { flattenOnChecker(pixels, width, height, cell); packFrame(pixels) })
+            if (pending.size >= PACKERS) going = keep()
+        }
+        while (going && pending.isNotEmpty()) going = keep()
+        pending.forEach { it.second.cancel() }
+        revise(force = true)
+        Log.i(TAG, "fill at=%d frames=%d added=%d bytes=%d budget=%d ms=%d".format(at, built.count, built.count - before, built.bytes, built.budget, (System.nanoTime() - started) / 1_000_000))
     }
 
     val first: Int get() = store?.first ?: 0

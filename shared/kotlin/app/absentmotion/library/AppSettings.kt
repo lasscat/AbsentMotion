@@ -122,6 +122,12 @@ class AppSettings(private val context: Context) {
         get() = backgroundPreviewState
         set(value) { backgroundPreviewState = value; prefs.edit().putBoolean("backgroundPreview", value).apply() }
 
+    private var previewCacheMbState by mutableIntStateOf(prefs.getInt("previewCacheMb", app.absentmotion.editor.DEFAULT_PREVIEW_CACHE_MB).takeIf { it in app.absentmotion.editor.PREVIEW_CACHE_SIZES } ?: app.absentmotion.editor.DEFAULT_PREVIEW_CACHE_MB)
+
+    var previewCacheMb: Int
+        get() = previewCacheMbState
+        set(value) { previewCacheMbState = value; prefs.edit().putInt("previewCacheMb", value).apply() }
+
     private var highDetailModelsState by mutableStateOf(prefs.getBoolean("highDetailModels", false).also(::useModelDetail))
 
     var highDetailModels: Boolean
