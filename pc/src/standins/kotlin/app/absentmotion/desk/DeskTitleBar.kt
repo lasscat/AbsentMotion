@@ -160,6 +160,7 @@ object DeskWindow {
     fun attach(window: androidx.compose.ui.awt.ComposeWindow) {
         this.window = window
         decorate(window)
+        DeskAway.watch(window)
         window.addWindowStateListener { maximized = it.newState and Frame.MAXIMIZED_BOTH == Frame.MAXIMIZED_BOTH }
         val decorations = runCatching { JBR.isWindowDecorationsSupported() }.getOrDefault(false)
         when (mode(DeskOs.mac, systemBarChosen, decorations)) {
