@@ -312,6 +312,7 @@ class DeskAppState {
             editor = null
             projectsChanged++
         }
+        engine.unloadMedia { editor == null }
         return true
     }
 

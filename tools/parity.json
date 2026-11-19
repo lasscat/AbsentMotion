@@ -682,13 +682,13 @@
     },
     {
       "id": "preview.cache_size",
-      "name": "Preview cache size in Settings, Playback (256 MB, 512 MB, 1 GB, 2 GB)",
-      "where": "PreviewCache.kt, SettingsDrawer.kt, AppSettings.kt",
+      "name": "Preview cache size in Settings, Playback (256 MB, 512 MB, 1 GB, 2 GB); memory is given back when the cache is dropped, when the window has been minimised or hidden for a minute, and when a project closes",
+      "where": "PreviewCache.kt, SettingsDrawer.kt, AppSettings.kt, DeskAway.kt, DeskHeap.kt, DeskEngineThread.kt unloadMedia (pc)",
       "android": "missing",
       "macos": "works",
       "windows": "untested",
       "linux": "untested",
-      "note": "desktop only: the desktop cache keeps compressed frames in memory within the chosen size; Android keeps its own cache sizing from free memory and storage"
+      "note": "desktop only: the desktop cache keeps compressed frames in memory within the chosen size and the heap target follows it; Android keeps its own cache sizing from free memory and storage"
     },
     {
       "id": "preview.pinch_gestures",

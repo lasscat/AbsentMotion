@@ -41,6 +41,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -253,6 +254,30 @@ class EngineThread(private val background: Int, private val context: Context? = 
     fun holdVideo(): Job? = null
 
     fun trimMemory() {}
+
+    suspend fun unloadMedia(unused: () -> Boolean) = captureLock.withLock {
+        if (mediaScene == null || !unused()) return@withLock
+        mediaJob?.cancelAndJoin()
+        if (!unused()) return@withLock
+        mediaScene = null
+        mediaKey = null
+        withContext(NonCancellable + dispatcher) {
+            if (closed) return@withContext
+            videos.forEach { (uri, source) -> source.close(); mosh?.drop(uri) }
+            videos.clear()
+            loadedPictures = emptySet()
+            loadedModels.clear()
+            trailed.clear()
+            synchronized(this@EngineThread) { shownXml = null; shownScene = null }
+            preparedAt = Int.MIN_VALUE
+            engine?.close()
+            engine = null
+            val old = targets.filterNotNull()
+            targets.fill(null)
+            shownTarget = null
+            javax.swing.SwingUtilities.invokeLater { frame = null; old.forEach { it.close() } }
+        }
+    }
 
     fun releaseVideo(): Job? = null
 
